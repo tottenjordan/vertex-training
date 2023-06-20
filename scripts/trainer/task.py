@@ -178,6 +178,8 @@ def main(argv):
     
     tb_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR', LOCAL_TB_FOLDER)
     model_dir = os.getenv('AIP_MODEL_DIR', LOCAL_SAVED_MODEL_DIR)
+    logging.info(f'AIP_TENSORBOARD_LOG_DIR = {tb_dir}')
+    logging.info(f'AIP_MODEL_DIR = {model_dir}')
     
     project_number = os.environ["CLOUD_ML_PROJECT_ID"]
     
@@ -186,17 +188,6 @@ def main(argv):
         location='us-central1',
         experiment=FLAGS.experiment_name
     )
-    
-#     if FLAGS.strategy == 'mirrored':
-#         strategy = tf.distribute.MirroredStrategy()
-#     else:
-#         strategy = tf.distribute.MultiWorkerMirroredStrategy()
-        
-#     if strategy.cluster_resolver:    
-#         task_type, task_id = (strategy.cluster_resolver.task_type,
-#                               strategy.cluster_resolver.task_id)
-#     else:
-#         task_type, task_id =(None, None)
 
     # Single Machine, single compute device
     if FLAGS.strategy == 'single':
@@ -205,16 +196,19 @@ def main(argv):
         else:
             strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
         logging.info("Single device training")
+    
     # Single Machine, multiple compute device
     elif FLAGS.strategy == 'mirrored':
         strategy = tf.distribute.MirroredStrategy()
         logging.info("Mirrored Strategy distributed training")
+    
     # Multi Machine, multiple compute device
     elif FLAGS.strategy == 'multiworker':
         strategy = tf.distribute.MultiWorkerMirroredStrategy()
         logging.info("Multi-worker Strategy distributed training")
         logging.info('TF_CONFIG = {}'.format(os.environ.get('TF_CONFIG', 'Not found')))
-        # Single Machine, multiple TPU devices
+   
+    # Single Machine, multiple TPU devices
     elif FLAGS.strategy == 'tpu':
         cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu="local")
         tf.config.experimental_connect_to_cluster(cluster_resolver)
@@ -258,14 +252,17 @@ def main(argv):
         metrics = tf.metrics.BinaryAccuracy()
         
         optimizer = optimization.create_optimizer(
-            init_lr=init_lr,
-            num_train_steps=num_train_steps,
-            num_warmup_steps=num_warmup_steps,
-            optimizer_type='adamw')
+            init_lr=init_lr
+            , num_train_steps=num_train_steps
+            , num_warmup_steps=num_warmup_steps
+            , optimizer_type='adamw'
+        )
 
-        model.compile(optimizer=optimizer,
-                      loss=loss,
-                      metrics=metrics)
+        model.compile(
+            optimizer=optimizer
+            , loss=loss
+            , metrics=metrics
+        )
         
     # Configure BackupAndRestore callback
     if FLAGS.strategy == 'single':
@@ -348,13 +345,13 @@ def main(argv):
         # tb_logs = '{}/tb_logs'.format(FLAGS.job_dir)
         # logging.info('Copying TensorBoard logs to: {}'.format(tb_logs))
         # copy_tensorboard_logs(LOCAL_TB_FOLDER, tb_logs)
-        saved_model_dir = '{}/saved_model'.format(model_dir)
-        logging.info('Training completed. Saving the trained model to: {}'.format(saved_model_dir))
-        model.save(saved_model_dir)
-    else:
-        saved_model_dir = model_dir
-        logging.info('Training completed. Saving the trained model to: {}'.format(saved_model_dir))
-        model.save(saved_model_dir)
+        # saved_model_dir = '{}/saved_model'.format(model_dir)
+        logging.info('Training completed. Saving the trained model to: {}'.format(model_dir))
+        model.save(model_dir)
+    # else:
+    #     # saved_model_dir = model_dir
+    #     logging.info('Training completed. Saving the trained model to: {}'.format(model_dir))
+    #     model.save(model_dir)
         
     # Save trained model
     # saved_model_dir = '{}/saved_model'.format(model_dir)
