@@ -1,5 +1,3 @@
-
-
 # Copyright 2021 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +34,10 @@ TFHUB_HANDLE_PREPROCESS = 'https://tfhub.dev/tensorflow/bert_en_uncased_preproce
 LOCAL_TB_FOLDER = '/tmp/logs'
 LOCAL_SAVED_MODEL_DIR = '/tmp/saved_model'
 
+# ====================================================
+# training args
+# ====================================================
+
 FLAGS = flags.FLAGS
 flags.DEFINE_integer('steps_per_epoch', 625, 'Steps per training epoch')
 flags.DEFINE_integer('eval_steps', 150, 'Evaluation steps')
@@ -44,6 +46,8 @@ flags.DEFINE_integer('per_replica_batch_size', 32, 'Per replica batch size')
 flags.DEFINE_integer('TRAIN_NGPU', 1, '')
 flags.DEFINE_integer('replica_count', 1, '')
 flags.DEFINE_integer('reduction_cnt', 0, '')
+
+flags.DEFINE_float('learning_rate', 0.001, '')
 
 flags.DEFINE_string('training_data_path', f'/bert-finetuning/imdb/tfrecords/train', 'Training data GCS path')
 flags.DEFINE_string('validation_data_path', f'/bert-finetuning/imdb/tfrecords/valid', 'Validation data GCS path')
@@ -66,6 +70,9 @@ auto_shard_policy = {
     'off': tf.data.experimental.AutoShardPolicy.OFF,
 }
 
+# ====================================================
+# helper functions
+# ====================================================
 
 def create_unbatched_dataset(tfrecords_folder):
     """Creates an unbatched dataset in the format required by the 
@@ -155,6 +162,9 @@ def copy_tensorboard_logs(local_path: str, gcs_path: str):
     for local_file, gcs_file in zip(local_files, gcs_log_files):
         tf.io.gfile.copy(local_file, gcs_file)
 
+# ====================================================
+# training main
+# ====================================================
 
 def main(argv):
     del argv
@@ -162,6 +172,9 @@ def main(argv):
     def _is_chief(task_type, task_id):
         return ((task_type == 'chief' or task_type == 'worker') and task_id == 0) or task_type is None
         
+    # ====================================================
+    # set args
+    # ====================================================
     
     logging.info('Setting up training.')
     logging.info('   epochs: {}'.format(FLAGS.epochs))
@@ -175,6 +188,7 @@ def main(argv):
     logging.info('   reduction_cnt: {}'.format(FLAGS.reduction_cnt))
     logging.info('   experiment_name: {}'.format(FLAGS.experiment_name))
     logging.info('   experiment_run: {}'.format(FLAGS.experiment_run))
+    logging.info('   learning_rate: {}'.format(FLAGS.learning_rate))
     
     tb_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR', LOCAL_TB_FOLDER)
     model_dir = os.getenv('AIP_MODEL_DIR', LOCAL_SAVED_MODEL_DIR)
@@ -189,6 +203,10 @@ def main(argv):
         experiment=FLAGS.experiment_name
     )
 
+    # ====================================================
+    # set distribution strategy (tensorflow) 
+    # ====================================================
+    
     # Single Machine, single compute device
     if FLAGS.strategy == 'single':
         if tf.test.is_gpu_available():
@@ -222,7 +240,7 @@ def main(argv):
         task_type, task_id = (strategy.cluster_resolver.task_type,
                               strategy.cluster_resolver.task_id)
     else:
-        task_type, task_id =(None, None)
+        task_type, task_id = (None, None)
         
     logging.info('task_type = {}'.format(task_type))
     logging.info('task_id = {}'.format(task_id))
@@ -232,16 +250,25 @@ def main(argv):
         FLAGS.per_replica_batch_size
     )
     
+    # ====================================================
+    # data input pipeline
+    # ====================================================
+    
     train_ds, valid_ds, test_ds = create_input_pipelines(
         FLAGS.training_data_path,
         FLAGS.validation_data_path,
         FLAGS.testing_data_path,
         global_batch_size,
-        auto_shard_policy[FLAGS.auto_shard_policy])
+        auto_shard_policy[FLAGS.auto_shard_policy]
+    )
         
     num_train_steps = FLAGS.steps_per_epoch * FLAGS.epochs
     num_warmup_steps = int(0.1*num_train_steps)
-    init_lr = 3e-5
+    init_lr = FLAGS.learning_rate # FLAGS.learning_rate 3e-5
+    
+    # ====================================================
+    # build & compile model
+    # ====================================================
     
     with strategy.scope():
         
@@ -264,6 +291,10 @@ def main(argv):
             , metrics=metrics
         )
         
+    # ====================================================
+    # set callbacks
+    # ====================================================
+        
     # Configure BackupAndRestore callback
     if FLAGS.strategy == 'single':
         callbacks = []
@@ -283,6 +314,10 @@ def main(argv):
             )
         )
     
+    # ====================================================
+    # train model
+    # ====================================================
+    
     logging.info('Starting training ...')
     
     if _is_chief(task_type, task_id):
@@ -300,6 +335,7 @@ def main(argv):
     # ====================================================
     # log Vertex Experiments
     # ====================================================
+    
     SESSION_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=3))
     
     if _is_chief(task_type, task_id):
@@ -339,19 +375,14 @@ def main(argv):
 
             vertex_ai.end_run()
             logging.info(f"EXPERIMENT RUN: '{FLAGS.experiment_run}-{SESSION_id}' has ended")
+            
+    # ====================================================
+    # save model
+    # ====================================================
 
     if _is_chief(task_type, task_id):
-        # Copy tensorboard logs to GCS
-        # tb_logs = '{}/tb_logs'.format(FLAGS.job_dir)
-        # logging.info('Copying TensorBoard logs to: {}'.format(tb_logs))
-        # copy_tensorboard_logs(LOCAL_TB_FOLDER, tb_logs)
-        # saved_model_dir = '{}/saved_model'.format(model_dir)
         logging.info('Training completed. Saving the trained model to: {}'.format(model_dir))
         model.save(model_dir)
-    # else:
-    #     # saved_model_dir = model_dir
-    #     logging.info('Training completed. Saving the trained model to: {}'.format(model_dir))
-    #     model.save(model_dir)
         
     # Save trained model
     # saved_model_dir = '{}/saved_model'.format(model_dir)
