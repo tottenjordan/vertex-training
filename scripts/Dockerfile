@@ -1,7 +1,9 @@
 
 FROM us-docker.pkg.dev/vertex-ai/training/tf-gpu.2-11:latest
 
-RUN pip install pip install tf-models-official==2.11.0 tensorflow-text==2.11.0
+RUN pip install tf-models-official==2.11.0
+RUN pip install tensorflow-text==2.11.0
+RUN pip install cloudml-hypertune
 
 WORKDIR /
 

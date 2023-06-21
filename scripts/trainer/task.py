@@ -13,6 +13,7 @@
 
 import os
 import tensorflow as tf
+from tensorflow.python.client import device_lib
 import tensorflow_hub as hub
 import tensorflow_text as text
 
@@ -27,6 +28,7 @@ import random
 import string
 
 from google.cloud import aiplatform as vertex_ai
+from hypertune import HyperTune
 
 
 TFHUB_HANDLE_ENCODER = 'https://tfhub.dev/tensorflow/bert_en_uncased_L-12_H-768_A-12/3'
@@ -58,6 +60,7 @@ flags.DEFINE_string('job_id', 'default', 'unique_id for experiment runs')
 flags.DEFINE_string('TRAIN_GPU', 'NA', '')
 flags.DEFINE_string('experiment_run', 'NA', '')
 flags.DEFINE_string('experiment_name', 'NA', '')
+flags.DEFINE_string('tuning', 'False', 'Tune model hyper parameters?')
 
 
 flags.DEFINE_enum('strategy', 'multiworker', ['single', 'mirrored', 'multiworker'], 'Distribution strategy')
@@ -189,6 +192,7 @@ def main(argv):
     logging.info('   experiment_name: {}'.format(FLAGS.experiment_name))
     logging.info('   experiment_run: {}'.format(FLAGS.experiment_run))
     logging.info('   learning_rate: {}'.format(FLAGS.learning_rate))
+    logging.info('   tuning: {}'.format(FLAGS.tuning))
     
     tb_dir = os.getenv('AIP_TENSORBOARD_LOG_DIR', LOCAL_TB_FOLDER)
     model_dir = os.getenv('AIP_MODEL_DIR', LOCAL_SAVED_MODEL_DIR)
@@ -206,6 +210,7 @@ def main(argv):
     # ====================================================
     # set distribution strategy (tensorflow) 
     # ====================================================
+    logging.info('DEVICES'  + str(device_lib.list_local_devices()))
     
     # Single Machine, single compute device
     if FLAGS.strategy == 'single':
@@ -313,6 +318,24 @@ def main(argv):
                 , histogram_freq=1
             )
         )
+        
+#     if FLAGS.tuning == "True":
+#         # Instantiate the HyperTune reporting object
+#         hpt = HyperTune()
+
+#         # Reporting callback
+#         class HPTCallback(tf.keras.callbacks.Callback):
+
+#             def on_epoch_end(self, epoch, logs=None):
+#                 hpt.report_hyperparameter_tuning_metric(
+#                     hyperparameter_metric_tag='binary_accuracy',
+#                     metric_value=logs['val_binary_accuracy'],
+#                     global_step=epoch
+#                 )
+
+#         if not callbacks:
+#             callbacks = []
+#         callbacks.append(HPTCallback())
     
     # ====================================================
     # train model
@@ -380,9 +403,26 @@ def main(argv):
     # save model
     # ====================================================
 
-    if _is_chief(task_type, task_id):
+    if FLAGS.strategy=="tpu":
+        logging.info(f"Training completed. Saving TPU trained model...")
+        save_locally = tf.saved_model.SaveOptions(experimental_io_device='/job:localhost')
+        model.save(model_dir, options=save_locally)
+    # single, mirrored or primary for multiworker
+    elif _is_chief(task_type, task_id):
         logging.info('Training completed. Saving the trained model to: {}'.format(model_dir))
         model.save(model_dir)
+    # non-primary workers for multi-workers
+    else:
+        # each worker saves their model instance to a unique temp location
+        worker_dir = model_dir + '/workertemp_' + str(task_id)
+        tf.io.gfile.makedirs(worker_dir)
+        model.save(worker_dir)
+        logging.info(f"worker saved to temp worker_dir: {worker_dir} ...")
+        
+        logging.info(f"recursively deleting everything under path: {worker_dir} ...")
+        tf.io.gfile.rmtree(worker_dir)
+
+    logging.info('Models saved!')
         
     # Save trained model
     # saved_model_dir = '{}/saved_model'.format(model_dir)
